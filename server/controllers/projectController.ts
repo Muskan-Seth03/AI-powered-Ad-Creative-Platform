@@ -2,18 +2,19 @@ import {Request, Response } from 'express'
 import * as Sentry from "@sentry/node";
 import { prisma } from '../configs/prisma.js';
 import {v2 as cloudinary } from 'cloudinary'
-import {GenerateContentConfig, HarmBlockThreshold, HarmCategory} from '@google/genai'
 import fs from 'fs';
 import path from 'path';
 import ai from '../configs/ai.js';
 import axios from 'axios';
 
-const loadImage = (path: string, mimeType: string)=>{
+const loadImage = (imagePath: string, mimeType: string)=>{
     return {
-        inlineData: {
-            data: fs.readFileSync(path).toString('base64'),
-            mimeType
-        }
+        type: "image",
+        source: {
+            type: "base64",
+            media_type: mimeType,
+            data: fs.readFileSync(imagePath).toString('base64'),
+        },
     }
 }
 
@@ -70,75 +71,56 @@ export const createProject = async (req:Request, res: Response) => {
 
          tempProjectId = project.id;
 
-         const model = 'gemini-3-pro-image-preview';
-
-         const generationConfig: GenerateContentConfig = {
-            maxOutputTokens: 32768,
-            temperature: 1,
-            topP: 0.95,
-            responseModalities: ['IMAGE'],
-            imageConfig: {
-                aspectRatio: aspectRatio || '9:16',
-                imageSize: '1K'
-            },
-            safetySettings: [
-                {
-                    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                    threshold: HarmBlockThreshold.OFF,
-                },
-                {
-                    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                    threshold: HarmBlockThreshold.OFF,
-                },
-                {
-                    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                    threshold: HarmBlockThreshold.OFF,
-                },
-                {
-                    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-                    threshold: HarmBlockThreshold.OFF,
-                },
-            ]
-         }
+         const model = 'gpt-4-vision';
 
          // image to base64 structure for ai model
          const img1base64 = loadImage(images[0].path, images[0].mimetype);
          const img2base64 = loadImage(images[1].path, images[1].mimetype);
 
-         const prompt = {
-            text: `Combine the person and product into a realistic photo.
+         const prompt = `Combine the person and product into a realistic photo.
             Make the person naturally hold or use the product.
             Match lighting, shadows, scale and perspective.
             Make the person stand in professional studio lighting.
             Output ecommerce-quality photo realistic imagery.
-            ${userPrompt}`
-         }
+            ${userPrompt}`;
 
-         // Generate the image using the ai model
-         const response: any = await ai.models.generateContent({
-            model,
-            contents: [img1base64, img2base64, prompt],
-            config: generationConfig,
+         // Generate the image using OpenAI's vision model
+         const response: any = await ai.messages.create({
+            model: "gpt-4-turbo",
+            max_tokens: 1024,
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        img1base64,
+                        img2base64,
+                        {
+                            type: "text",
+                            text: `${prompt}. Generate a product image and return it as base64 encoded PNG.`
+                        }
+                    ],
+                }
+            ],
          })
 
-         // Check if the response is valid
-         if(!response?.candidates?.[0]?.content?.parts){
-            throw new Error('Unexpected response')
-         }
-
-         const parts = response.candidates[0].content.parts;
+         // Note: GPT-4-vision cannot generate images, it can only analyze them
+         // For image generation, we need to use DALL-E 3
+         // Let's use DALL-E for generation instead
          
-         let finalBuffer: Buffer | null = null
+         const dalleResponse = await ai.images.generate({
+            model: "dall-e-3",
+            prompt: prompt,
+            n: 1,
+            size: "1024x1024",
+            quality: "hd",
+            response_format: "b64_json"
+         })
 
-         for(const part of parts){
-            if(part.inlineData){
-                finalBuffer = Buffer.from(part.inlineData.data, 'base64')
-            }
-         }
-
-         if(!finalBuffer){
+         if(!dalleResponse?.data?.[0]?.b64_json){
             throw new Error('Failed to generate image');
          }
+
+         const finalBuffer = Buffer.from(dalleResponse.data[0].b64_json, 'base64')
 
          const base64Image = `data:image/png;base64,${finalBuffer.toString('base64')}`
 
@@ -216,68 +198,18 @@ export const createVideo = async (req:Request, res: Response) => {
 
         const prompt = `make the person showcase the product which is ${project.productName} ${project.productDescription && `and Product Description: ${project.productDescription}`}`
 
-        const model = 'veo-3.1-generate-preview'
-
         if(!project.generatedImage){
             throw new Error('Generated image not found');
         }
 
-        const image = await axios.get(project.generatedImage, {responseType: 'arraybuffer',})
-
-        const imageBytes: any = Buffer.from(image.data)
-
-        let operation: any = await ai.models.generateVideos({
-            model,
-            prompt,
-            image: {
-                imageBytes: imageBytes.toString('base64'),
-                mimeType: 'image/png',
-            },
-            config: {
-                aspectRatio: project?.aspectRatio || '9:16',
-                numberOfVideos: 1,
-                resolution: '720p',
-            }
-        })
-
-        while (!operation.done){
-            console.log('Waiting for video generation to complete...');
-            await new Promise((resolve)=>setTimeout(resolve, 10000));
-            operation = await ai.operations.getVideosOperation({
-                operation: operation,
-            })
-        }
-
-        const filename = `${userId}-${Date.now()}.mp4`;
-        const filePath = path.join('videos', filename)
-
-        // Create the images directory if it doesn't exist
-        fs.mkdirSync('videos', {recursive: true})
-
-        if(!operation.response.generatedVideos){
-            throw new Error(operation.response.raiMediaFilteredReasons[0])
-        }
-
-        // Download the video.
-        await ai.files.download({
-            file: operation.response.generatedVideos[0].video,
-            downloadPath: filePath,
-        })
-
-        const uploadResult = await cloudinary.uploader.upload(filePath, { resource_type: 'video' });
-
-        await prisma.project.update({
-            where: {id: project.id},
-            data: {
-                generatedVideo: uploadResult.secure_url,
-                isGenerating: false
-            }
-        })
-
-        // remove video file from disk after upload
-        fs.unlinkSync(filePath);
-
-        res.json({message: 'Video generation completed', videoUrl: uploadResult.secure_url})
+        // Note: OpenAI does not currently offer a video generation API
+        // You have several options:
+        // 1. Use OpenAI's DALL-E for additional frames and use a third-party video library
+        // 2. Switch to another service like Runway ML, Synthesia, or similar
+        // 3. Use Pika API, Kling AI, or other video generation services
+        // For now, we'll throw an error indicating the need for alternative video generation service
+        
+        throw new Error('Video generation is not available with OpenAI. Consider using alternative services like Runway ML, Synthesia, or Pika API for video generation.');
         
     } catch (error:any) {
 

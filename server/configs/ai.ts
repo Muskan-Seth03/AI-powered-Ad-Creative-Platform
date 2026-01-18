@@ -1,7 +1,7 @@
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 
-const ai = new GoogleGenAI({
-    apiKey: process.env.GOOGLE_CLOUD_API_KEY,
+const ai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
 })
 
 export default ai;
