@@ -7,17 +7,6 @@ import path from 'path';
 import ai from '../configs/ai.js';
 import axios from 'axios';
 
-const loadImage = (imagePath: string, mimeType: string)=>{
-    return {
-        type: "image",
-        source: {
-            type: "base64",
-            media_type: mimeType,
-            data: fs.readFileSync(imagePath).toString('base64'),
-        },
-    }
-}
-
 
 export const createProject = async (req:Request, res: Response) => {
     let tempProjectId: string;
@@ -71,12 +60,6 @@ export const createProject = async (req:Request, res: Response) => {
 
          tempProjectId = project.id;
 
-         const model = 'gpt-4-vision';
-
-         // image to base64 structure for ai model
-         const img1base64 = loadImage(images[0].path, images[0].mimetype);
-         const img2base64 = loadImage(images[1].path, images[1].mimetype);
-
          const prompt = `Combine the person and product into a realistic photo.
             Make the person naturally hold or use the product.
             Match lighting, shadows, scale and perspective.
@@ -84,29 +67,7 @@ export const createProject = async (req:Request, res: Response) => {
             Output ecommerce-quality photo realistic imagery.
             ${userPrompt}`;
 
-         // Generate the image using OpenAI's vision model
-         const response: any = await ai.messages.create({
-            model: "gpt-4-turbo",
-            max_tokens: 1024,
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        img1base64,
-                        img2base64,
-                        {
-                            type: "text",
-                            text: `${prompt}. Generate a product image and return it as base64 encoded PNG.`
-                        }
-                    ],
-                }
-            ],
-         })
-
-         // Note: GPT-4-vision cannot generate images, it can only analyze them
-         // For image generation, we need to use DALL-E 3
-         // Let's use DALL-E for generation instead
-         
+         // Generate the image using DALL-E 3
          const dalleResponse = await ai.images.generate({
             model: "dall-e-3",
             prompt: prompt,
